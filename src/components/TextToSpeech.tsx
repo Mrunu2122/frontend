@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { PlayIcon, PauseIcon, ArrowDownTrayIcon } from '@heroicons/react/24/solid';
-import { getTtsAudioUrl, getSupportedLanguages } from '../services/audioService';
+// Import only what's needed from audioService
 
 // Audio file interface moved to audioService.ts
 

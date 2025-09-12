@@ -8,6 +8,7 @@ const LANGUAGE_MAP = {
 
 // Get the audio URL for text-to-speech
 export const getTtsAudioUrl = (text: string, language: string): string => {
+  // Get the language code, default to 'en' if not found
   const langCode = LANGUAGE_MAP[language.toLowerCase() as keyof typeof LANGUAGE_MAP] || 'en';
   return `${API_BASE_URL}/tts?text=${encodeURIComponent(text)}&lang=${language}`;
 };
@@ -43,7 +44,15 @@ export const getAudioByLanguage = async (text: string, language: string): Promis
 /**
  * Fetches all available audio files
  */
-export const getAllAudioFiles = async (): Promise<any[]> => {
+interface AudioFile {
+  id: string;
+  url: string;
+  language: string;
+  timestamp: string;
+  // Add other properties as needed
+}
+
+export const getAllAudioFiles = async (): Promise<AudioFile[]> => {
   try {
     const response = await fetch(`${API_BASE_URL}/audio`, {
       method: 'GET',

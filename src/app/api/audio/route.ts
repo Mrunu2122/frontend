@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { MongoClient } from 'mongodb';
+import { Collection, Db, MongoClient, ObjectId } from 'mongodb';
 
 // Types
 interface AudioRequest {
@@ -19,7 +19,18 @@ const uri = process.env.MONGODB_URI;
 const dbName = 'elevenlabs-clone';
 
 // Simple in-memory cache for development
-const mockAudios: Record<string, any> = {};
+interface AudioCache {
+  [key: string]: {
+    text: string;
+    language: string;
+    voice: string;
+    url: string;
+    timestamp: Date;
+    status: 'completed' | 'pending' | 'failed';
+  };
+}
+
+const mockAudios: AudioCache = {};
 
 // Only use MongoDB if URI is provided
 const useMongoDB = Boolean(uri);
@@ -34,13 +45,40 @@ if (useMongoDB) {
         version: '1',
         strict: true,
         deprecationErrors: true,
-      }
+      },
+      connectTimeoutMS: 5000, // 5 seconds timeout
+      socketTimeoutMS: 45000, // 45 seconds timeout
     });
     console.log('MongoDB client initialized');
   } catch (error) {
     console.error('Failed to initialize MongoDB client:', error);
     client = null;
   }
+}
+
+// Helper function to get a database connection
+async function getDb(): Promise<Db> {
+  if (!client) {
+    throw new Error('MongoDB client is not initialized');
+  }
+  
+  // Check if client is connected by attempting to ping the database
+  try {
+    await client.db(dbName).command({ ping: 1 });
+    // If we get here, connection is good
+  } catch (error) {
+    console.error('Database ping failed, attempting to reconnect...', error);
+    try {
+      console.log('Connecting to MongoDB...');
+      await client.connect();
+      console.log('Connected to MongoDB');
+    } catch (error) {
+      console.error('Failed to connect to MongoDB:', error);
+      throw new Error('Failed to connect to database');
+    }
+  }
+  
+  return client.db(dbName);
 }
 
 // Log storage mode
@@ -73,10 +111,6 @@ export async function POST(request: Request) {
       );
     }
 
-    console.log('Connecting to MongoDB...');
-    await client.connect();
-    console.log('Connected to MongoDB');
-    
     // Generate audio URL (mock implementation)
     console.log('Generating audio URL...');
     const audioUrl = await generateAudio(body.text, body.language, body.voice);
@@ -89,28 +123,24 @@ export async function POST(request: Request) {
       status: 'completed' as const,
     };
     
-    let savedId: string;
+    let savedId: string | null = null;
     
     // Save to MongoDB if available, otherwise use in-memory
-    if (useMongoDB && client) {
+    if (useMongoDB) {
       try {
-        // Create a new client instance for this operation
-        const operationClient = new MongoClient(uri!);
-        await operationClient.connect();
-        const db = operationClient.db(dbName);
-        const collection = db.collection<AudioDocument>('audios');
+        const db = await getDb();
+        const collection: Collection<AudioDocument> = db.collection<AudioDocument>('audios');
         const result = await collection.insertOne(documentToInsert);
         savedId = result.insertedId.toString();
         console.log('Saved to MongoDB with ID:', savedId);
-        await operationClient.close();
       } catch (dbError) {
-        console.error('Failed to save to MongoDB, falling back to in-memory:', dbError);
+        console.error('Failed to save to MongoDB, falling back to in-memory storage:', dbError);
         // Fall through to in-memory storage
       }
     }
     
-    // If MongoDB is not being used or failed, use in-memory
-    if (!useMongoDB || !savedId) {
+    // If we don't have a savedId yet, use in-memory storage
+    if (!savedId) {
       savedId = Date.now().toString();
       mockAudios[savedId] = documentToInsert;
       console.log('Saved to in-memory storage with ID:', savedId);
@@ -141,8 +171,6 @@ export async function POST(request: Request) {
   }
 }
 
-import { ObjectId } from 'mongodb';
-
 export async function GET(request: Request) {
   console.log('GET /api/audio - Starting request');
   
@@ -160,26 +188,20 @@ export async function GET(request: Request) {
       );
     }
 
-    console.log('Connecting to MongoDB...');
-    await client.connect();
-    console.log('Connected to MongoDB');
     console.log('Looking up audio with ID:', audioId);
     
     // Try to find in MongoDB first if available
-    if (useMongoDB && uri) {
-      const operationClient = new MongoClient(uri);
+    if (useMongoDB) {
       try {
-        await operationClient.connect();
-        const db = operationClient.db(dbName);
-        const collection = db.collection<AudioDocument>('audios');
+        const db = await getDb();
+        const collection: Collection<AudioDocument> = db.collection<AudioDocument>('audios');
         const objectId = new ObjectId(audioId);
         const audio = await collection.findOne({ _id: objectId });
         
         if (audio) {
           console.log('Found in MongoDB');
-          await operationClient.close();
           return NextResponse.json({
-            id: audio._id,
+            id: audio._id.toString(),
             url: audio.url,
             language: audio.language,
             voice: audio.voice,
@@ -188,12 +210,6 @@ export async function GET(request: Request) {
         }
       } catch (dbError) {
         console.error('MongoDB lookup failed, falling back to in-memory:', dbError);
-      } finally {
-        try {
-          await operationClient.close();
-        } catch (e) {
-          console.error('Error closing MongoDB connection:', e);
-        }
       }
     }
     
@@ -232,13 +248,5 @@ export async function GET(request: Request) {
       },
       { status: 500 }
     );
-  } finally {
-    try {
-      console.log('Closing MongoDB connection...');
-      await client.close();
-      console.log('MongoDB connection closed');
-    } catch (closeError) {
-      console.error('Error closing MongoDB connection:', closeError);
-    }
-  }
+  } 
 }
